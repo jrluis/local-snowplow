@@ -1,0 +1,95 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - ./postgres/init.sh:/docker-entrypoint-initdb.d/init-user-db.sh
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=mysecretpassword
+      - POSTGRES_DB=snowplow
+  iglu-server-init:
+    image: snowplow/iglu-server:0.9.1
+    command: setup --config /snowplow/config.hocon
+    depends_on:
+      - postgres
+    volumes:
+      - ./iglu-server/config.hocon:/snowplow/config.hocon
+  iglu-server:
+    image: snowplow/iglu-server:0.9.1
+    command: --config /snowplow/config.hocon
+    depends_on:
+      iglu-server-init:
+        condition: service_completed_successfully
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./iglu-server/config.hocon:/snowplow/config.hocon
+    healthcheck:
+      test: wget --no-verbose --tries=1 http://127.0.0.1:8080/api/meta/health || exit 1
+      interval: 10s
+      retries: 3
+      start_period: 0s
+      timeout: 10s
+  localstack:
+    container_name: "${LOCALSTACK_DOCKER_NAME-localstack_main}"
+    image: localstack/localstack:2.0.2
+    ports:
+      - "127.0.0.1:4566:4566"            # LocalStack Gateway
+      - "127.0.0.1:4510-4559:4510-4559"  # external services port range
+    environment:
+      - DEBUG=0
+      - LS_LOG=warn
+      - SERVICES=s3,dynamodb,sqs,apigateway,cloudformation,cloudwatch,ec2,iam,kinesis,kms,lambda,route53,secretsmanager,sns,ssm,stepfuncstions,sts
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - AWS_ACCESS_KEY_ID=foo
+      - AWS_SECRET_ACCESS_KEY=bar
+    volumes:
+      - "${LOCALSTACK_VOLUME_DIR:-./volume}:/var/lib/localstack"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+  localstack-init:
+    image: localstack/localstack:2.0.2
+    entrypoint: /bin/bash -c
+    command: /opt/code/localstack/init.sh
+    environment:
+      - LOCALSTACK_HOST=localstack
+      - AWS_ACCESS_KEY_ID=foo
+      - AWS_SECRET_ACCESS_KEY=bar
+    volumes:
+      - ./localstack/init.sh:/opt/code/localstack/init.sh
+      - /tmp/enrich-tmp/:/snowplow/enrich-tmp/
+    depends_on:
+      localstack:
+        condition: service_started
+  collector:
+    image: snowplow/scala-stream-collector-kinesis:2.9.0-distroless
+    command: [ "--config", "/snowplow/config/config-kinesis.hocon" ]
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./collector:/snowplow/config
+    environment:
+      - "SP_JAVA_OPTS=-Xms512m -Xmx512m"
+    depends_on:
+      localstack-init:
+        condition: service_completed_successfully
+  enricher:
+    image: snowplow/snowplow-enrich-kinesis:3.5.1
+    environment:
+      - AWS_ACCESS_KEY_ID=foo
+      - AWS_SECRET_ACCESS_KEY=bar
+      - AWS_REGION=us-east-1
+    depends_on:
+      localstack-init:
+        condition: service_completed_successfully
+      iglu-server:
+        condition: service_healthy
+    volumes:
+      - ./enricher/config.hocon:/snowplow/config-kinesis.hocon
+      - ./enricher/resolver.json:/snowplow/resolver.json
+      - ./enricher/enrichments/:/snowplow/enrichments/
+      - /tmp/enrich-tmp/:/snowplow/enrich-tmp/
+    command: --config /snowplow/config-kinesis.hocon --iglu-config /snowplow/resolver.json --enrichments /snowplow/enrichments

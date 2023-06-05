@@ -1,0 +1,10 @@
+{
+  "database": {
+    "host": "postgres"
+    "dbname": "snowplow"
+    "username": "postgres"
+    "password": "mysecretpassword"
+  }
+
+  "superApiKey": "cdda097a-ffb6-474c-87e1-cc964799a189"
+}
