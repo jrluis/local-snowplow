@@ -15,7 +15,7 @@ Clone the project
 Go to the project directory
 
 ```bash
-  cd local-snowplow
+  cd local-snowplow/pipeline
 ```
 
 Start the pipeline
